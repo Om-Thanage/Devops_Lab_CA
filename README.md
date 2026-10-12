@@ -1,156 +1,162 @@
-# Continuous Resilience Testing in CI/CD Using Chaos Mesh
+# Campus IT Helpdesk: Resilience Testing in CI/CD
 
-## Purpose and architecture
+A small campus support platform used to demonstrate a complete DevOps pipeline. A student opens a ticket, an agent assigns and resolves it, and a notification worker processes updates. GitHub Actions builds and tests the services, deploys them to Minikube, and uses Chaos Mesh to kill an API pod. A measured gate decides whether the candidate may be promoted.
 
-**Problem:** a conventional pipeline can pass unit tests while a release loses service availability after a pod failure. **Objective:** make a measured Kubernetes fault experiment a release gate. This repository supplies a small Express 5 inventory API using ECMAScript modules, automated tests, a Docker image, a two-replica Kubernetes deployment, one Chaos Mesh `PodChaos` experiment, and a GitHub Actions gate.
+The project's focus is the **delivery and resilience decision**. The web app gives that decision a real workflow to protect. See the [live demonstration story](docs/demo.md).
 
 ```text
-push to private GitHub main
-  -> Linux self-hosted runner: checks + tests + Docker build
-  -> minikube image load -> Kubernetes test deployment
-  -> NodePort health samples -> Chaos Mesh kills one pod
-  -> availability/recovery calculation -> gate
-  -> pass: eligible for promotion; fail: promotion step skipped
+GitHub main → EC2 self-hosted runner → tests → two Docker images
+             → Minikube: API (2 pods) + worker (1 pod) + PostgreSQL (PVC)
+             → worker outage / queued update recovery
+             → Chaos Mesh API pod kill / ticket request measurements
+             → PASS: promotion decision marker; FAIL: marker skipped
 ```
 
-**Selected execution architecture:** a repository-scoped Linux x86-64 self-hosted GitHub Actions runner on the same host as Docker and Minikube. The runner has `node`, `npm`, `python3`, `docker`, `kubectl`, and `minikube` in `PATH`. Minikube uses the Docker driver and containerd runtime. The pipeline builds an image tagged with the commit SHA and loads it into Minikube; no registry credential is needed. This is simpler and more repeatable for a student demonstration than installing a fresh Minikube, Chaos Mesh, and runner prerequisites inside every GitHub-hosted job. An ephemeral cluster on a hosted runner could work after validating privileged Chaos Mesh components, nested container runtime access, and job time limits; it adds setup time and failure modes to every run. A GitHub-hosted runner cannot reach the laptop's private cluster by default. The cost is a persistent, trusted runner that must be online and secured. The project deliberately avoids Istio, Flagger, canary routing, and registry promotion.
+## What each component does
 
-| Lab CA requirement | Implemented by |
+| Component | Responsibility |
 |---|---|
-| Git/GitHub | Commit this repository to a private GitHub repository; `push` to `main` triggers Actions |
-| Application build | `npm run build` checks the deployable Node source |
-| Automated tests | `npm test` exercises `/health`, `/items`, and 404 behaviour |
-| Docker | `Dockerfile` and `docker build` |
-| CI/CD | `.github/workflows/resilience.yml` |
-| Deployment | `k8s/` manifests in local Minikube |
-| Documentation | This guide and `docs/` |
-| Demonstration | `docs/demo.md`, Actions evidence artifact, and actual gate output |
+| Express API and web UI | Create, list, assign, and resolve tickets; expose `/health` and notification activity |
+| PostgreSQL | Persist tickets and queued notification events across API pod replacements |
+| Notification worker | Poll an authenticated internal API for pending events and mark them delivered in the demo log |
+| Chaos Mesh | Terminate one selected API pod inside the `resilience-lab` namespace |
+| Python gates | Verify queued worker recovery and measure ticket availability during the pod fault |
+| GitHub Actions | Build, test, deploy, run gates, and retain JSON and Kubernetes evidence |
 
-## Stack and prerequisites
+The worker logs simulated deliveries; it does not send real email. There is no login or role authorization in this educational app, so do not expose its NodePort to the public internet or use it for real support requests.
 
-Assumed host: **Ubuntu 24.04 x86-64**, with at least 4 CPU cores, 8 GiB RAM, and 25 GiB free disk. Windows users can use an Ubuntu machine or WSL2 with working Docker access and a Linux runner; verify that the runner and Minikube use the same `kubectl` context. Use a **private repository** with trusted collaborators only. The workflow triggers on `push` to `main` and manual dispatch, never on external pull requests.
+## Lab requirement mapping
 
-Install Docker Engine, Node.js **22**, Python **3.10+**, `git`, `curl`, `kubectl`, Helm **3**, and Minikube using the linked official installers: [Docker Engine on Ubuntu](https://docs.docker.com/engine/install/ubuntu/), [Node.js downloads](https://nodejs.org/en/download), [Python on Unix](https://docs.python.org/3/using/unix.html), [kubectl on Linux](https://kubernetes.io/docs/tasks/tools/install-kubectl-linux/), [Helm installation](https://helm.sh/docs/intro/install/), and [Minikube start](https://minikube.sigs.k8s.io/docs/start/). Follow each installer for the current package version and then verify:
+| Requirement | Evidence |
+|---|---|
+| Git/GitHub | Versioned private repository and commit SHA in every run |
+| Application build and tests | `npm run build`, `npm test`, Python unit tests |
+| Docker | `Dockerfile` and `Dockerfile.worker` |
+| CI/CD | `.github/workflows/resilience.yml`, push and manual triggers |
+| Deployment | Kubernetes API, worker, PostgreSQL, Service, and PVC manifests |
+| Documentation and demo | This README, `docs/`, JSON artifacts, Actions run logs |
+
+## Tested lab architecture
+
+Ubuntu 24.04 on an EC2 `m7i-flex.large` (2 vCPU, 8 GiB RAM), Docker, Node 22, Python 3, kubectl, Helm 3, Minikube with Docker driver and containerd, Kubernetes **v1.35.2**, and Chaos Mesh **v2.8.4**. The repository-scoped Linux x64 GitHub Actions runner runs as `ubuntu` on the same EC2 host. The runner directory belongs **outside** this repository, for example `~/actions-runner`; putting it below this project's `"type": "module"` package can break the runner's own CommonJS scripts.
+
+The runner requires the custom `resilience-lab` label and access to Docker and the Minikube context. Keep the repository private and run only trusted code on this persistent self-hosted runner. The app Service is a Minikube NodePort (`30080`) reachable from EC2; keep EC2 inbound security-group access limited to SSH. See [GitHub's self-hosted runner documentation](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners).
+
+### One-time cluster setup
+
+These commands run on the EC2 Ubuntu host as `ubuntu`. Skip components you have already installed. Chaos Mesh 2.8 supports Kubernetes 1.35; see its [supported releases](https://chaos-mesh.org/supported-releases/).
 
 ```bash
-git --version; node --version; npm --version; python3 --version
-docker version; kubectl version --client; helm version; minikube version
-```
+minikube start --driver=docker --container-runtime=containerd \
+  --kubernetes-version=v1.35.2 --cpus=2 --memory=5120
+kubectl wait --for=condition=Ready node/minikube --timeout=180s
 
-The Docker daemon must answer `docker info`. A host running the Actions runner needs outbound access to GitHub. It must be able to reach `http://$(minikube ip):30080` from its own shell. If Docker's group is granted to the runner account, treat that account as having host-level privileges. Keep secrets and unrelated workloads off this machine. Register the runner **only with this private repository**, use the custom `resilience-lab` label, and do not run untrusted PR workflows. See [GitHub's runner setup](https://docs.github.com/en/actions/how-tos/manage-runners/self-hosted-runners/add-runners) and [security guidance](https://docs.github.com/en/actions/reference/security/secure-use).
-
-## One-time setup
-
-Run on the Linux host as the same user that will run GitHub Actions:
-
-```bash
-minikube start --driver=docker --container-runtime=containerd --cpus=4 --memory=6144
-kubectl config current-context  # must print minikube
-docker info
-minikube status
 helm repo add chaos-mesh https://charts.chaos-mesh.org
 helm repo update
 helm upgrade --install chaos-mesh chaos-mesh/chaos-mesh \
   --namespace chaos-mesh --create-namespace --version 2.8.4 \
   --set chaosDaemon.runtime=containerd \
   --set chaosDaemon.socketPath=/run/containerd/containerd.sock \
-  --set controllerManager.enableFilterNamespace=true
+  --set controllerManager.enableFilterNamespace=true \
+  --set controllerManager.replicaCount=1 \
+  --set dashboard.create=false
 kubectl -n chaos-mesh get pods
 kubectl get crd podchaos.chaos-mesh.org
 ```
 
-Wait until controller, daemon, and other installed components are healthy. Chaos Mesh's daemon requires privileged access to the node/container runtime; install it **only in the isolated local lab cluster**. The namespace filter confines injection to namespaces annotated `chaos-mesh.org/inject=enabled`; `k8s/namespace.yaml` provides that annotation. The experiment additionally selects only `app=resilience-api` in `resilience-lab`. The installation values and PodChaos fields follow [Chaos Mesh 2.8.4 installation](https://chaos-mesh.org/docs/production-installation-using-helm/), [namespace filtering](https://chaos-mesh.org/docs/configure-enabled-namespace/), and [PodChaos](https://chaos-mesh.org/docs/simulate-pod-chaos-on-kubernetes/).
+The namespace annotation in `k8s/namespace.yaml` enables injection only for this lab namespace. The PodChaos selector narrows the fault to `app=resilience-api`. See the [Chaos Mesh Helm instructions](https://chaos-mesh.org/docs/production-installation-using-helm/) and [namespace filtering](https://chaos-mesh.org/docs/configure-enabled-namespace/).
 
-Create an **empty private GitHub repository** without generated starter files. In this project directory, run the following, replacing `ACCOUNT/REPOSITORY` with the repository path GitHub gives you:
+Create one Kubernetes Secret before the new workflow runs. Its random values stay in the cluster and are never printed or committed. **Do this only once while the PostgreSQL PVC is new; changing the database password afterward requires a database password change too.**
 
 ```bash
-git add .
-git commit -m "Build resilience testing lab"
-git remote add origin https://github.com/ACCOUNT/REPOSITORY.git
-git push -u origin main
+kubectl apply -f k8s/namespace.yaml
+kubectl -n resilience-lab create secret generic ticketing-secrets \
+  --from-literal=db-password="$(openssl rand -hex 24)" \
+  --from-literal=worker-token="$(openssl rand -hex 24)"
 ```
 
-On its **Settings → Actions → Runners → New self-hosted runner** page, choose Linux x64 and execute the download, checksum, configuration, and start commands displayed there. Registration tokens and runner versions change, so use the generated commands rather than a copied token. Add `resilience-lab` to the runner labels during configuration. Check the runner shows **Idle**. A repository runner is scoped to this repository; an organization runner needs an access group restricted to this repository. Do not trigger code from untrusted contributors on this runner.
+The two keys are `db-password` and `worker-token`. The API and PostgreSQL read the first; the API and worker read the second. There are no GitHub repository secrets for this local-cluster build.
 
-Clone the project on any machine with Git using the URL of **your** private repository:
+## Develop and check
 
 ```bash
-git clone <your-private-repository-url>
-cd <cloned-directory>
 npm ci --ignore-scripts
 npm run check
 npm test
+python3 -m unittest discover -s tests -p 'test_*.py'
 npm run build
-npm start
 ```
 
-With `npm start` running, `curl http://127.0.0.1:3000/health` returns `{"status":"ok"}` and `curl http://127.0.0.1:3000/items` returns one sample inventory item. `GET /health` is both the Kubernetes readiness/liveness endpoint and the gate's HTTP target. Unknown paths return JSON 404. The server closes on SIGTERM/SIGINT and logs startup as JSON.
+`npm run build` validates the deployable JavaScript source because no transpilation is needed. Docker creates the deployable artifacts. The Node unit test uses an in-memory test store; the full Actions deployment and Python gates exercise PostgreSQL and Kubernetes.
 
-## Each pipeline run
+### API endpoints
 
-The workflow checks the Minikube context and Chaos Mesh CRD, runs quality checks and unit tests, builds the Docker image, loads it with `minikube image load`, applies namespace/service/deployment, waits for ready replicas, runs the chaos gate, and uploads JSON/Kubernetes/log evidence even if the gate fails. Its final "Promote verified candidate" step is a **promotion decision marker**, not a production deployment. A failing gate skips it. No release target was specified in the assignment.
+| Endpoint | Behaviour |
+|---|---|
+| `GET /` | Ticketing web UI |
+| `GET /health` | Checks database connectivity and returns `{ "status": "ok" }` |
+| `GET /api/tickets` | Lists recent tickets |
+| `POST /api/tickets` | Creates a ticket from `title`, `requester`, optional `description` and `priority` |
+| `GET /api/tickets/:id` | Reads one persisted ticket |
+| `PATCH /api/tickets/:id` | Sets `status` to `open`, `in_progress`, or `resolved`, and `assignee` |
+| `GET /api/notifications` | Shows pending and delivered demo events |
 
-To do a local full run from this repository on the Linux host (use a unique tag if rerunning):
+Internal notification endpoints require the secret worker token. The browser uses text nodes when displaying user input to avoid HTML injection.
+
+## Manual deployment on EC2
+
+Run from the repository directory after the one-time setup:
 
 ```bash
 docker build -t resilience-api:local .
+docker build -f Dockerfile.worker -t helpdesk-worker:local .
 minikube image load resilience-api:local
+minikube image load helpdesk-worker:local
 kubectl apply -f k8s/namespace.yaml
+kubectl apply -f k8s/postgres.yaml
+kubectl -n resilience-lab rollout status deployment/ticketing-db --timeout=180s
 kubectl apply -f k8s/service.yaml
 kubectl apply -f k8s/deployment.yaml
+kubectl apply -f k8s/worker.yaml
 kubectl -n resilience-lab rollout status deployment/resilience-api --timeout=120s
-kubectl -n resilience-lab get pods,deploy,svc
+kubectl -n resilience-lab rollout status deployment/notification-worker --timeout=120s
+kubectl -n resilience-lab get pods,deploy,svc,pvc
 curl "http://$(minikube ip):30080/health"
-python3 scripts/resilience_gate.py --url "http://$(minikube ip):30080" --replicas 2
 ```
 
-For a push-driven run, commit and push to `main`, then open the repository **Actions → Resilience gate** and follow each stage. Manual **Run workflow** defaults to 2 replicas and 95% minimum availability. Jobs are serialized by the cluster concurrency group. A new image tag prevents accidentally assessing an older candidate.
+For the web UI on your PC, open an SSH tunnel to EC2 and port-forward the Kubernetes Service there. In one EC2 terminal run `kubectl -n resilience-lab port-forward service/resilience-api 8080:80`. On the PC, in a second terminal, run `ssh -i <path-to-your-pem> -L 8080:127.0.0.1:8080 ubuntu@<ec2-public-ip>`, then open `http://localhost:8080`. Keep both terminals open while using the UI. This does not require opening port 30080 in the EC2 security group.
 
-## Experiment and gate
+## Pipeline and resilience checks
 
-**Steady state:** two ready replicas behind the `resilience-api` NodePort Service; `/health` responds successfully. **Fault:** Chaos Mesh `PodChaos` with `mode: one` and `action: pod-kill` terminates one selected pod once. **Hypothesis:** the remaining replica maintains at least **95%** successful health requests in a 40-second fault window; any detected outage recovers within **10 seconds**; a pod is actually replaced and the original replica count becomes ready again. These values are **demonstration targets**, not industry standards.
+The workflow on `main` or **Actions → Resilience gate → Run workflow** checks tools, runs Node/Python tests, builds both images with the commit SHA, loads them into Minikube, deploys the database and services, and verifies ready replicas. It then runs two checks:
 
-The Python gate takes a 3-second clean baseline, deletes any old one-shot PodChaos, applies `chaos/pod-kill.yaml`, sends health requests every 0.2 seconds for 40 seconds, and checks that an original pod UID disappeared. It then waits for rollout and checks ready replica count and final health. Availability = successful requests ÷ total requests × 100. Recovery time = the longest observed span from a failed sample to the next successful sample; it is 0 if no request failed, and undefined if an outage had not recovered by the end of the window. All criteria must pass. Exit codes: **0 pass**, **1 measured gate failure**, **2 setup/command error**. `results/latest.json` contains measured values. Sampling is from one runner to one NodePort, so it estimates availability at that probe frequency and does not measure user latency or traffic from multiple regions. A one-time pod kill has no duration; the 40 seconds is the observation window.
+1. `scripts/worker_recovery.py` scales the notification worker to zero, creates a ticket, verifies its notification is queued, restores the worker, and verifies delivery. A `finally` block restores the worker even on a failed check.
+2. `scripts/resilience_gate.py` creates a ticket, records a 3-second baseline, applies `chaos/pod-kill.yaml`, samples `/health` and `GET /api/tickets/:id` every 0.2 seconds for 40 seconds, checks pod replacement and restored replicas, and resolves the ticket. The gate requires at least **95% sampled availability** and recovery within **10 seconds** by default. These are lab demonstration thresholds.
 
-For manual observation while an Actions run is in progress:
+Only a passing gate reaches the **Promote verified candidate** step, which is a decision marker, not a production deployment. JSON and Kubernetes/log evidence are uploaded even if a gate fails.
+
+Run the gates manually after deployment with:
 
 ```bash
-kubectl -n resilience-lab get podchaos resilience-pod-kill -o yaml
-kubectl -n resilience-lab get pods -l app=resilience-api -w
-kubectl -n resilience-lab get events --sort-by=.lastTimestamp
+python3 scripts/worker_recovery.py --url "http://$(minikube ip):30080"
+python3 scripts/resilience_gate.py --url "http://$(minikube ip):30080" --replicas 2
+cat results/worker-recovery.json
+cat results/latest.json
 ```
 
-The gate cleans up PodChaos even when it fails. If an interruption prevents cleanup, run `kubectl -n resilience-lab delete podchaos resilience-pod-kill --ignore-not-found`.
+For the failure demonstration, manually dispatch the workflow with `replicas=1` and `min_availability=100`. A real failed probe during the single-pod outage should produce `FAIL` and skip promotion. Confirm the actual JSON; timing can cause a run to miss a brief outage. Rerun with two replicas and 95% to demonstrate the correction.
 
-## Failure demonstration and evaluation
+## Evidence, limitations, and cleanup
 
-Choose **Run workflow → replicas `1` → min_availability `100`**. The same real pod-kill experiment now has no surviving replica while Kubernetes starts a replacement. The expected result is failed HTTP probes, a measured availability below 100%, and a `FAIL` gate; the promotion marker is skipped. Timing depends on the host, so inspect the actual JSON rather than assuming a result. Correct the topology by rerunning with **2 replicas and 95%**. A failure scenario is meaningful only if the artifact shows a pod replacement and actual failed requests. If it does not, rerun or investigate; do not label it a demonstrated failure.
+Follow [the demonstration story](docs/demo.md), fill in [the results template](docs/results-template.md), and use the [report outline](docs/report.md). Use the JSON and Actions log as the source for measured outcomes; do not reuse results from the earlier inventory API.
 
-Record baseline and fault-window counts in [results template](docs/results-template.md). Compare normal versus injected-fault availability, then state whether the hypothesis was supported by that run. No experimental outcome is claimed by this repository alone.
+This is one Minikube node with a single PostgreSQL instance. The API has two replicas, but the database is a single point of failure. The worker's delivery log is a simulation, and the UI lacks authentication. Sampled availability from one probe client does not establish production reliability. A future version could use a managed/high-availability database, identity and roles, real email delivery, and repeated multi-node experiments.
 
-## File map
-
-| Path | Purpose |
-|---|---|
-| `src/server.js`, `tests/server.test.js`, `package.json` | API, unit tests, build/check scripts |
-| `Dockerfile`, `.dockerignore` | Minimal non-root container image |
-| `k8s/` | Restricted namespace, two-replica deployment, NodePort Service |
-| `chaos/pod-kill.yaml` | One-pod fault, explicitly scoped to application |
-| `scripts/resilience_gate.py` | Baseline, injection, measured HTTP gate, cleanup, JSON evidence |
-| `.github/workflows/resilience.yml` | Automated delivery and release decision |
-| `docs/` | Demo, report, results, troubleshooting, viva |
-
-## Cleanup, limits, and next steps
+To remove the lab application after saving evidence:
 
 ```bash
 kubectl -n resilience-lab delete podchaos resilience-pod-kill --ignore-not-found
-kubectl delete namespace resilience-lab --ignore-not-found
-# Only when finished with the dedicated lab cluster:
-helm uninstall chaos-mesh -n chaos-mesh
-kubectl delete namespace chaos-mesh --ignore-not-found
-minikube stop
+kubectl delete namespace resilience-lab
 ```
 
-The project tests one pod failure on one local node and one HTTP health path. It does not prove production resilience or deploy a production release. If later required, add a second independent node or a measured network fault, longer repeated trials, latency/functional probes, and an actual protected promotion environment. Each addition should have its own measurable hypothesis.
-
-See [troubleshooting](docs/troubleshooting.md), [live demo](docs/demo.md), [report outline](docs/report.md), and [viva guide](docs/viva.md).
+Deleting the namespace also deletes the ticketing PVC and its database data. To pause without removing data, use `minikube stop` and stop the EC2 instance when your demo is finished.
