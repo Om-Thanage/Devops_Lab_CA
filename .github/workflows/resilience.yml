@@ -1,0 +1,76 @@
+name: Resilience gate
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      replicas:
+        description: 'Use 1 with 100% threshold for the failure demonstration'
+        type: choice
+        options: ['2', '1']
+        default: '2'
+      min_availability:
+        type: choice
+        options: ['95', '100']
+        default: '95'
+jobs:
+  verify:
+    runs-on: [self-hosted, linux, x64, resilience-lab]
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    concurrency: resilience-lab-cluster
+    env:
+      REPLICAS: ${{ inputs.replicas || '2' }}
+      MIN_AVAILABILITY: ${{ inputs.min_availability || '95' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check trusted cluster and tools
+        run: |
+          set -euo pipefail
+          test "$(kubectl config current-context)" = minikube
+          node --version
+          npm --version
+          docker --version
+          kubectl version --client
+          minikube version
+          kubectl get crd podchaos.chaos-mesh.org
+      - name: Install dependencies, check, test, build
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts
+          npm run check
+          npm test
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          npm run build
+      - name: Build and load image
+        run: |
+          set -euo pipefail
+          docker build -t "resilience-api:${GITHUB_SHA}" .
+          minikube image load "resilience-api:${GITHUB_SHA}"
+      - name: Deploy test candidate
+        run: |
+          set -euo pipefail
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/service.yaml
+          sed "s|resilience-api:local|resilience-api:${GITHUB_SHA}|" k8s/deployment.yaml | kubectl apply -f -
+          kubectl -n resilience-lab scale deployment/resilience-api --replicas="$REPLICAS"
+          kubectl -n resilience-lab rollout status deployment/resilience-api --timeout=120s
+          test "$(kubectl -n resilience-lab get deployment resilience-api -o jsonpath='{.status.readyReplicas}')" = "$REPLICAS"
+      - name: Inject fault and evaluate resilience
+        run: |
+          set -euo pipefail
+          python3 scripts/resilience_gate.py --url "http://$(minikube ip):30080" --replicas "$REPLICAS" --min-availability "$MIN_AVAILABILITY"
+      - name: Record deployment evidence
+        if: always()
+        run: |
+          mkdir -p results
+          kubectl -n resilience-lab get pods,deploy,svc -o wide > results/kubernetes.txt 2>&1 || true
+          kubectl -n resilience-lab logs deployment/resilience-api --all-pods=true --tail=100 > results/application.log 2>&1 || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: resilience-evidence-${{ github.run_id }}
+          path: results/
+      - name: Promote verified candidate
+        run: echo "Candidate $GITHUB_SHA passed the resilience gate; eligible for promotion."

@@ -1,0 +1,7 @@
+node_modules/
+results/
+.env
+__pycache__/
+*.pyc
+docs/*
+Codex.md

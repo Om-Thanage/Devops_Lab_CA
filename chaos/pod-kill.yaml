@@ -1,0 +1,13 @@
+apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: resilience-pod-kill
+  namespace: resilience-lab
+spec:
+  action: pod-kill
+  mode: one
+  selector:
+    namespaces:
+      - resilience-lab
+    labelSelectors:
+      app: resilience-api
