@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Campus IT Helpdesk</title>
+<style>
+  :root { font: 16px system-ui, sans-serif; color: #1a2533; background: #f1f5f9; }
+  body { max-width: 1050px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { margin-bottom: .25rem; } p { color: #526174; }
+  section { background: white; padding: 1.3rem; margin: 1rem 0; border-radius: 12px; box-shadow: 0 2px 10px #1a253310; }
+  form { display: grid; gap: .7rem; } label { display: grid; gap: .25rem; font-weight: 600; }
+  input, textarea, select, button { font: inherit; padding: .55rem; border: 1px solid #aab6c4; border-radius: 6px; }
+  textarea { min-height: 4rem; } button { cursor: pointer; background: #135cb6; color: white; border-color: #135cb6; }
+  button:hover { background: #0d478e; } .grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: .7rem; }
+  .ticket { border-top: 1px solid #dde3ea; padding: 1rem 0; } .ticket h3 { margin: 0 0 .4rem; }
+  .ticket form { display: flex; flex-wrap: wrap; align-items: end; margin-top: .6rem; }
+  .ticket form label { min-width: 160px; flex: 1; } .ticket form button { align-self: end; }
+  .high { color: #a82727; font-weight: bold; } #message { min-height: 1.5rem; }
+  li { padding: .25rem 0; }
+</style>
+<main>
+  <h1>Campus IT Helpdesk</h1>
+  <p>Track support requests from report to resolution. Ticket updates remain stored when an API pod restarts.</p>
+  <section>
+    <h2>Report an issue</h2>
+    <form id="create">
+      <div class="grid">
+        <label>Your name<input name="requester" maxlength="80" required></label>
+        <label>Issue title<input name="title" maxlength="100" required></label>
+        <label>Priority<select name="priority"><option value="normal">Normal</option><option value="high">High</option></select></label>
+      </div>
+      <label>Description<textarea name="description" maxlength="1000"></textarea></label>
+      <button type="submit">Create ticket</button>
+    </form>
+    <p id="message" role="status" aria-live="polite"></p>
+  </section>
+  <section><h2>Tickets</h2><div id="tickets">Loading…</div></section>
+  <section><h2>Notification activity</h2><p>The worker records a delivery event after it processes each queued update.</p><ul id="notifications"></ul></section>
+</main>
+<script type="module">
+  const tickets = document.querySelector('#tickets');
+  const notifications = document.querySelector('#notifications');
+  const message = document.querySelector('#message');
+  const create = document.querySelector('#create');
+  const el = (tag, text) => { const node = document.createElement(tag); node.textContent = text; return node; };
+  async function api(path, options) {
+    const response = await fetch(path, options);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    return data;
+  }
+  async function refresh() {
+    try {
+      const [ticketData, notificationData] = await Promise.all([
+        api('/api/tickets'), api('/api/notifications'),
+      ]);
+      tickets.replaceChildren();
+      if (!ticketData.tickets.length) tickets.append(el('p', 'No tickets yet.'));
+      for (const ticket of ticketData.tickets) {
+        const card = el('article', ''); card.className = 'ticket';
+        card.append(el('h3', `#${ticket.id} ${ticket.title}`));
+        const summary = el('p', `${ticket.requester} · ${ticket.priority} priority · ${ticket.status.replace('_', ' ')} · assigned to ${ticket.assignee || 'nobody'}`);
+        if (ticket.priority === 'high') summary.className = 'high';
+        card.append(summary, el('p', ticket.description));
+        const form = document.createElement('form');
+        const assigneeLabel = el('label', 'Assign to');
+        const assignee = document.createElement('input'); assignee.name = 'assignee'; assignee.maxLength = 80; assignee.value = ticket.assignee || '';
+        assigneeLabel.append(assignee);
+        const statusLabel = el('label', 'Status');
+        const status = document.createElement('select'); status.name = 'status';
+        for (const value of ['open', 'in_progress', 'resolved']) {
+          const option = el('option', value.replace('_', ' ')); option.value = value; option.selected = ticket.status === value; status.append(option);
+        }
+        statusLabel.append(status);
+        form.append(assigneeLabel, statusLabel, el('button', 'Save update'));
+        form.addEventListener('submit', async event => {
+          event.preventDefault();
+          try {
+            await api(`/api/tickets/${ticket.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ status: status.value, assignee: assignee.value.trim() || null }) });
+            message.textContent = `Ticket #${ticket.id} updated.`; await refresh();
+          } catch (error) { message.textContent = error.message; }
+        });
+        card.append(form); tickets.append(card);
+      }
+      notifications.replaceChildren();
+      for (const notification of notificationData.notifications) {
+        notifications.append(el('li', `${notification.delivered_at ? 'Delivered' : 'Pending'}: ${notification.message}`));
+      }
+    } catch (error) { message.textContent = `Unable to refresh: ${error.message}`; }
+  }
+  create.addEventListener('submit', async event => {
+    event.preventDefault();
+    const form = new FormData(create);
+    try {
+      const ticket = await api('/api/tickets', { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(Object.fromEntries(form)) });
+      message.textContent = `Ticket #${ticket.id} created.`; create.reset(); await refresh();
+    } catch (error) { message.textContent = error.message; }
+  });
+  await refresh(); setInterval(refresh, 3000);
+</script>
+</html>
