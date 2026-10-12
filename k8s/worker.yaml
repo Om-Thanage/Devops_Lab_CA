@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notification-worker
+  namespace: resilience-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: notification-worker }
+  template:
+    metadata:
+      labels: { app: notification-worker }
+    spec:
+      containers:
+        - name: worker
+          image: helpdesk-worker:local
+          imagePullPolicy: Never
+          env:
+            - name: API_URL
+              value: http://resilience-api
+            - name: WORKER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: ticketing-secrets, key: worker-token }
+          resources:
+            requests: { cpu: 20m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 128Mi }

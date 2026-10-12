@@ -18,7 +18,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, resilience-lab]
     permissions:
       contents: read
-    timeout-minutes: 20
+    timeout-minutes: 30
     concurrency: resilience-lab-cluster
     env:
       REPLICAS: ${{ inputs.replicas || '2' }}
@@ -47,16 +47,27 @@ jobs:
         run: |
           set -euo pipefail
           docker build -t "resilience-api:${GITHUB_SHA}" .
+          docker build -f Dockerfile.worker -t "helpdesk-worker:${GITHUB_SHA}" .
           minikube image load "resilience-api:${GITHUB_SHA}"
+          minikube image load "helpdesk-worker:${GITHUB_SHA}"
       - name: Deploy test candidate
         run: |
           set -euo pipefail
           kubectl apply -f k8s/namespace.yaml
+          kubectl -n resilience-lab get secret ticketing-secrets
+          kubectl apply -f k8s/postgres.yaml
+          kubectl -n resilience-lab rollout status deployment/ticketing-db --timeout=180s
           kubectl apply -f k8s/service.yaml
           sed "s|resilience-api:local|resilience-api:${GITHUB_SHA}|" k8s/deployment.yaml | kubectl apply -f -
+          sed "s|helpdesk-worker:local|helpdesk-worker:${GITHUB_SHA}|" k8s/worker.yaml | kubectl apply -f -
           kubectl -n resilience-lab scale deployment/resilience-api --replicas="$REPLICAS"
           kubectl -n resilience-lab rollout status deployment/resilience-api --timeout=120s
+          kubectl -n resilience-lab rollout status deployment/notification-worker --timeout=120s
           test "$(kubectl -n resilience-lab get deployment resilience-api -o jsonpath='{.status.readyReplicas}')" = "$REPLICAS"
+      - name: Verify queued notifications recover
+        run: |
+          set -euo pipefail
+          python3 scripts/worker_recovery.py --url "http://$(minikube ip):30080"
       - name: Inject fault and evaluate resilience
         run: |
           set -euo pipefail
@@ -65,8 +76,9 @@ jobs:
         if: always()
         run: |
           mkdir -p results
-          kubectl -n resilience-lab get pods,deploy,svc -o wide > results/kubernetes.txt 2>&1 || true
+          kubectl -n resilience-lab get pods,deploy,svc,pvc -o wide > results/kubernetes.txt 2>&1 || true
           kubectl -n resilience-lab logs deployment/resilience-api --all-pods=true --tail=100 > results/application.log 2>&1 || true
+          kubectl -n resilience-lab logs deployment/notification-worker --all-pods=true --tail=100 > results/worker.log 2>&1 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -23,20 +23,29 @@ def pods():
     return {item['metadata']['uid'] for item in data['items']}
 
 
-def probe(url):
+def request_json(url, path, method='GET', body=None):
+    data = None if body is None else json.dumps(body).encode()
+    request = urllib.request.Request(url + path, data=data, method=method,
+                                     headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(request, timeout=2) as response:
+        return response.status, json.load(response)
+
+
+def probe(url, ticket_id):
     try:
-        with urllib.request.urlopen(url + '/health', timeout=0.8) as response:
-            return response.status == 200 and json.load(response).get('status') == 'ok'
+        health_status, health = request_json(url, '/health')
+        ticket_status, ticket = request_json(url, f'/api/tickets/{ticket_id}')
+        return health_status == ticket_status == 200 and health.get('status') == 'ok' and ticket.get('id') == ticket_id
     except (OSError, ValueError, urllib.error.URLError):
         return False
 
 
-def measure(url, seconds, interval):
+def measure(url, ticket_id, seconds, interval):
     observations = []
     start = time.monotonic()
     while time.monotonic() - start < seconds:
         at = time.monotonic()
-        observations.append((at, probe(url)))
+        observations.append((at, probe(url, ticket_id)))
         time.sleep(max(0, interval - (time.monotonic() - at)))
     return observations
 
@@ -75,7 +84,14 @@ def main():
     before = pods()
     if len(before) != args.replicas:
         raise RuntimeError(f'expected {args.replicas} pods, found {len(before)}')
-    baseline = summarize(measure(args.url, 3, args.interval))
+    created_status, ticket = request_json(args.url, '/api/tickets', 'POST',
+                                          {'title': f'CI resilience check {time.time_ns()}',
+                                           'description': 'Verify ticket survives an API pod failure',
+                                           'requester': 'CI pipeline', 'priority': 'high'})
+    if created_status != 201:
+        raise RuntimeError('ticket creation failed')
+    ticket_id = ticket['id']
+    baseline = summarize(measure(args.url, ticket_id, 3, args.interval))
     if baseline['failed']:
         raise RuntimeError('baseline health failed; no chaos injected')
 
@@ -83,7 +99,7 @@ def main():
     kubectl('-n', NAMESPACE, 'delete', 'podchaos', 'resilience-pod-kill', '--ignore-not-found')
     try:
         kubectl('apply', '-f', EXPERIMENT)
-        observations = measure(args.url, args.duration, args.interval)
+        observations = measure(args.url, ticket_id, args.duration, args.interval)
         during = summarize(observations)
         after = pods()
         injected = len(before - after) > 0
@@ -91,8 +107,14 @@ def main():
                                   'deployment/resilience-api', '--timeout=90s'], capture_output=True).returncode == 0
         ready = int(kubectl('-n', NAMESPACE, 'get', 'deployment', 'resilience-api',
                             '-o', 'jsonpath={.status.readyReplicas}').strip() or '0')
-        healthy = probe(args.url)
-        passed = (injected and rollout and ready == args.replicas and healthy
+        healthy = probe(args.url, ticket_id)
+        try:
+            update_status, updated = request_json(args.url, f'/api/tickets/{ticket_id}', 'PATCH',
+                                                  {'status': 'resolved', 'assignee': 'CI pipeline'})
+            workflow_complete = update_status == 200 and updated.get('status') == 'resolved'
+        except (OSError, ValueError, urllib.error.URLError):
+            workflow_complete = False
+        passed = (injected and rollout and ready == args.replicas and healthy and workflow_complete
                   and during['availability_percent'] >= args.min_availability
                   and during['recovery_seconds'] is not None
                   and during['recovery_seconds'] <= args.max_recovery)
@@ -100,7 +122,9 @@ def main():
                   'fault': 'one pod termination', 'measurement_seconds': args.duration,
                   'baseline': baseline, 'during_fault': during, 'pod_replaced': injected,
                   'rollout_complete': rollout, 'ready_replicas': ready,
-                  'final_health': healthy, 'min_availability_percent': args.min_availability,
+                  'final_health': healthy, 'ticket_id': ticket_id,
+                  'ticket_workflow_complete': workflow_complete,
+                  'min_availability_percent': args.min_availability,
                   'max_recovery_seconds': args.max_recovery, 'gate': 'PASS' if passed else 'FAIL'}
         path = Path(args.output)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -114,6 +138,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (subprocess.CalledProcessError, RuntimeError) as exc:
+    except (subprocess.CalledProcessError, RuntimeError, urllib.error.URLError) as exc:
         print(f'gate error: {exc}', file=sys.stderr)
         sys.exit(2)

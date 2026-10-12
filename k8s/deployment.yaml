@@ -18,6 +18,15 @@ spec:
         - name: api
           image: resilience-api:local
           imagePullPolicy: Never
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: ticketing-secrets, key: db-password }
+            - name: DATABASE_URL
+              value: postgresql://ticketing:$(DB_PASSWORD)@postgres:5432/ticketing
+            - name: WORKER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: ticketing-secrets, key: worker-token }
           ports:
             - containerPort: 3000
           readinessProbe:
@@ -27,5 +36,5 @@ spec:
             httpGet: { path: /health, port: 3000 }
             periodSeconds: 5
           resources:
-            requests: { cpu: 20m, memory: 32Mi }
-            limits: { cpu: 200m, memory: 128Mi }
+            requests: { cpu: 30m, memory: 64Mi }
+            limits: { cpu: 250m, memory: 192Mi }
