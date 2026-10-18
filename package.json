@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "check": "node --check src/server.js && node --check src/store.js && node --check src/worker.js && node --check src/public/app.js && node --check tests/server.test.js",
+    "check": "node --check src/server.js && node --check src/store.js && node --check src/worker.js && node --check src/public/app.js && node --check scripts/seed-demo.js && node --check tests/server.test.js && node --check tests/seed-demo.test.js",
     "build": "npm run check"
   },
   "engines": {

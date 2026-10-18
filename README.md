@@ -1,4 +1,4 @@
-# Campus IT Helpdesk: Resilience Testing in CI/CD
+# KJ Somaiya School of Engineering Helpdesk: Resilience Testing in CI/CD
 
 A small campus support platform used to demonstrate a complete DevOps pipeline. A student opens a ticket, an agent assigns and resolves it, and a notification worker processes updates. GitHub Actions builds and tests the services, deploys them to Minikube, and uses Chaos Mesh to kill an API pod. A measured gate decides whether the candidate may be promoted.
 
@@ -125,6 +125,18 @@ curl "http://$(minikube ip):30080/health"
 ```
 
 For the web UI on your PC, open an SSH tunnel to EC2 and port-forward the Kubernetes Service there. In one EC2 terminal run `kubectl -n resilience-lab port-forward service/resilience-api 8080:80`. On the PC, in a second terminal, run `ssh -i <path-to-your-pem> -L 8080:127.0.0.1:8080 ubuntu@<ec2-public-ip>`, then open `http://localhost:8080`. Keep both terminals open while using the UI. This does not require opening port 30080 in the EC2 security group.
+
+### Demo tickets
+
+The Actions workflow adds eight fictional KJ Somaiya School of Engineering support tickets after deployment. They use Indian student, faculty, and technician names and cover Wi-Fi, classrooms, student access, labs, and the library. The initial mix of open, in-progress, and resolved tickets fills the dashboard and creates notification events for the worker. The script skips matching tickets already returned by the API, so rerunning it during a normal demo does not duplicate the seed set.
+
+For a manual deployment, run this once from the repository directory on EC2 after the API is ready:
+
+```bash
+node scripts/seed-demo.js --url "http://$(minikube ip):30080"
+```
+
+Or, while the `kubectl port-forward` above is active, run `node scripts/seed-demo.js --url http://127.0.0.1:8080`. The seed command creates demo records only when invoked directly or by the workflow; starting the API alone never inserts them. It does not delete existing tickets. The API lists the latest 100 tickets, so this skip check assumes the seed records are still in that window.
 
 ## Pipeline and resilience checks
 

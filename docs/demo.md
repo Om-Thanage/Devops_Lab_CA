@@ -6,7 +6,7 @@
 
 ## Scene 1 — The report (about one minute)
 
-Open the Campus IT Helpdesk web page through an SSH tunnel and `kubectl port-forward -n resilience-lab service/resilience-api 8080:80` as described in README. Visit `http://localhost:8080` on your PC. Create a high-priority ticket titled **Campus Wi-Fi unavailable before exam**, with a student name and short description. Show its ID and `open` status. Assign it to a technician and move it to `in progress`.
+Open the KJ Somaiya School of Engineering helpdesk web page through an SSH tunnel and `kubectl port-forward -n resilience-lab service/resilience-api 8080:80` as described in README. Visit `http://localhost:8080` on your PC. Show the seeded mix of open, in-progress, and resolved requests. If this was a manual deployment, run the demo seed command in README first. Create a high-priority ticket titled **Campus Wi-Fi unavailable before exam**, with a student name and short description. Show its ID and `open` status. Assign it to a technician and move it to `in progress`.
 
 Explain: the browser talks to the API service; two API pods share ticket data in PostgreSQL. The notification worker handles queued updates separately. The UI's notification activity shows pending or delivered events; no real email is sent.
 

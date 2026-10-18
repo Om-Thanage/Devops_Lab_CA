@@ -64,6 +64,10 @@ jobs:
           kubectl -n resilience-lab rollout status deployment/resilience-api --timeout=120s
           kubectl -n resilience-lab rollout status deployment/notification-worker --timeout=120s
           test "$(kubectl -n resilience-lab get deployment resilience-api -o jsonpath='{.status.readyReplicas}')" = "$REPLICAS"
+      - name: Add KJ Somaiya demo tickets
+        run: |
+          set -euo pipefail
+          node scripts/seed-demo.js --url "http://$(minikube ip):30080"
       - name: Verify queued notifications recover
         run: |
           set -euo pipefail
