@@ -2,7 +2,7 @@
 
 A small campus support platform used to demonstrate a complete DevOps pipeline. A student opens a ticket, an agent assigns and resolves it, and a notification worker processes updates. GitHub Actions builds and tests the services, deploys them to Minikube, and uses Chaos Mesh to kill an API pod. A measured gate decides whether the candidate may be promoted.
 
-The project's focus is the **delivery and resilience decision**. The web app gives that decision a real workflow to protect. See the [live demonstration story](docs/demo.md).
+The project's focus is the **delivery and resilience decision**. The web app gives that decision a real workflow to protect.
 
 ```text
 GitHub main → EC2 self-hosted runner → tests → two Docker images
@@ -160,7 +160,7 @@ For the failure demonstration, manually dispatch the workflow with `replicas=1` 
 
 ## Evidence, limitations, and cleanup
 
-Follow [the demonstration story](docs/demo.md), fill in [the results template](docs/results-template.md), and use the [report outline](docs/report.md). Use the JSON and Actions log as the source for measured outcomes; do not reuse results from the earlier inventory API.
+Fill in [the results template](docs/results-template.md) and use the [report outline](docs/report.md). Use the JSON and Actions log as the source for measured outcomes; do not reuse results from the earlier inventory API.
 
 This is one Minikube node with a single PostgreSQL instance. The API has two replicas, but the database is a single point of failure. The worker's delivery log is a simulation, and the UI lacks authentication. Sampled availability from one probe client does not establish production reliability. A future version could use a managed/high-availability database, identity and roles, real email delivery, and repeated multi-node experiments.
 
