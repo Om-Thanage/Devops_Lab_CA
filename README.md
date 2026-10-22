@@ -34,7 +34,7 @@ The worker logs simulated deliveries; it does not send real email. There is no l
 | Docker | `Dockerfile` and `Dockerfile.worker` |
 | CI/CD | `.github/workflows/resilience.yml`, push and manual triggers |
 | Deployment | Kubernetes API, worker, PostgreSQL, Service, and PVC manifests |
-| Documentation and demo | This README, `docs/`, JSON artifacts, Actions run logs |
+| Documentation | This README, JSON artifacts, Actions run logs |
 
 ## Tested lab architecture
 
